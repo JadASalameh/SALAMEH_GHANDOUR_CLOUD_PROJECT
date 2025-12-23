@@ -269,3 +269,107 @@ shippingservice-7fdc84f79-tx747          1/1     Running   0          30m
 </pre>
 
 This result confirms that the removal of the load generator and the adjustment of CPU requests were sufficient to bring the total requested CPU below the allocatable capacity of the cluster, allowing Kubernetes to successfully schedule all remaining application components.
+
+## 6. Running and Deploying the Load Generator Using Infrastructure as Code
+
+### 6.1 Motivation and Infrastructure-as-Code Approach
+
+- In this project, we deploy the load generator **outside the Kubernetes cluster** to avoid consuming cluster resources and to produce realistic external traffic. While we could create and configure a VM on Google Cloud manually, this approach is:
+
+   -   error-prone and hard to reproduce
+
+   -   difficult to document precisely
+
+   -   tedious to repeat for every experiment
+
+   -   unsuitable for automation or systematic evaluation
+
+- To address these issues, we adopt an Infrastructure-as-Code (IaC) approach that combines Terraform and Ansible, each with a clearly defined role.
+
+- **Terraform** is used for **infrastructure provisioning**, i.e., reserving and managing the cloud resources required to host the load generator. In this project, Terraform is responsible for:
+
+   -   Creating a Google Compute Engine virtual machine of type **`e2-medium`**
+
+   -   Attaching a boot disk based on **Debian 12**
+
+   -   Assigning a public IPv4 address to the virtual machine
+
+   -   Applying a network tag to the instance
+
+   -   Creating a firewall rule that allows inbound traffic on ports **22 (SSH)** and **8089 (Locust)** exclusively for this instance
+
+   - Terraform also exposes the external IP address of the virtual machine through a declared output, which is later consumed by the automation workflow.
+ 
+ - **Ansible** is used for **infrastructure configuration and workload execution** on the provisioned virtual machine. In this project, Ansible is responsible for:
+
+   -   Connecting to the virtual machine via SSH using the credentials injected by Google Cloud
+
+   -   Installing and enabling **Docker** on the virtual machine
+
+   -   Pulling the pre-built load generator container image
+
+   -   Running the load generator container with the appropriate runtime parameters
+
+   -   Configuring the load generator to target the **external frontend service** of the Kubernetes application
+
+This clear separation ensures that Terraform focuses exclusively on cloud resource lifecycle management, while Ansible handles all software installation and runtime configuration tasks.
+
+---
+
+### 6.2 Setting Up Terraform for Infrastructure Provisioning
+
+- All Terraform files are grouped in the terraform/ directory to clearly separate infrastructure provisioning from configuration and orchestration logic.
+  
+- Default location of the VM: region `europe-west6` and zone `europe-west6-a`
+  
+- All Terraform operations must be run from the dedicated terraform/ directory.
+  ```bash
+   cd microservices-demo/online-boutique-loadgen/terraform
+  ```
+
+▶  Directory Structure: 
+<pre>
+terraform/
+├── main.tf - Defines the Google Cloud provider and the resources to create
+├── variables.tf - Declares input variables such as project_id, region, and zone.
+├── terraform.tfvars - Provides actual values for the variables
+├── terraform.tfstate - Store Terraform’s view of the deployed resources 
+├── terraform.tfstate.backup
+
+</pre>
+
+▶ Setting `project_id`: 
+
+```bash
+nano terraform.tfvars
+```
+Replace with your project ID: 
+<pre>
+   project_id = "cloud-computing-478110"
+</pre>
+
+
+▶ Initialize Terraform: Downloads providers and prepares the working directory.
+```bash
+terraform init
+```
+▶ Provision Infrastructure: Creates or updates resources to match the configuration. Idempotent.
+
+```bash
+terraform apply
+```
+OR
+```bash
+terraform apply -auto-approve
+```
+▶ Retrieve VM's External IP: This IP will be passed to Ansible in later steps:
+
+```bash
+terraform output loadgen_external_ip
+```
+▶ Destroy Infrastructure: Deletes all resources tracked by Terraform.
+
+```bash
+terraform destroy
+```
+
