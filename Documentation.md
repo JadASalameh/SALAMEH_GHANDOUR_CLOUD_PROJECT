@@ -22,15 +22,14 @@ To ensure a consistent and repeatable setup, a shell script was used to automate
 The script provisions a new Kubernetes cluster using default GKE settings.
 
 ```bash
-#!/usr/bin/env bash
 set -euo pipefail
 
 # ============================
 # Configuration
 # ============================
 PROJECT_ID="cloud-computing-478110"
-REGION="europe-west1"
-ZONE="europe-west1-b"
+REGION="europe-west6"
+ZONE="europe-west6-a"
 CLUSTER_NAME="prodigy-cluster"
 
 echo "Setting GCP project"
@@ -67,7 +66,6 @@ gke-prodigy-cluster-default-pool-30fddad3-bllw   Ready    &lt;none&gt;   8m39s  
 gke-prodigy-cluster-default-pool-30fddad3-m1br   Ready    &lt;none&gt;   8m40s   v1.33.5-gke.1308000   10.132.0.17   35.187.27.7     Container-Optimized OS from Google   6.6.105+         containerd://2.0.6
 </pre>
 
-   - The output shows the three `default worker` nodes automatically created during the GKE cluster initialization.
 
 ▶ We now run the command below to display the **`total`** hardware CPU and memory capacity of each node.
 ```bash
@@ -80,8 +78,6 @@ gke-prodigy-cluster-default-pool-30fddad3-bf4k   2     4015664Ki
 gke-prodigy-cluster-default-pool-30fddad3-bllw   2     4015664Ki
 gke-prodigy-cluster-default-pool-30fddad3-m1br   2     4015664Ki
 </pre>
-
-  - Each default worker node is provisioned with 2 vCPUs and approximately 4 GiB of memory, providing a uniform resource capacity across the cluster.
 
 ▶ We now run the command below to display the **`allocatable`** (schedulable) CPU and memory for each node.
 ```bash
@@ -373,3 +369,6 @@ terraform output loadgen_external_ip
 terraform destroy
 ```
 
+### 6.3 Configuring and Running the Load Generator with Ansible
+
+- Once the load generator virtual machine has been provisioned using Terraform, Ansible is used to configure the system and execute the load generator workload. Ansible operates by connecting to the virtual machine over SSH and applying a sequence of idempotent tasks that bring the system into the desired configuration.
