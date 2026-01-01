@@ -82,3 +82,98 @@ This architecture is composed of three main components—Node Exporter, Promethe
 - The Kubernetes manifests, Grafana dashboard JSON files, and the Makefile used to deploy the monitoring stack are located in the following directory: `microservices-demo/monitoring`
 
 - The exact commands and procedures required to deploy and access these components are described in a dedicated **`Deployment and Usage section`**.
+
+---
+
+## 3. Deployment of node-level monitoring stack
+
+All deployment artifacts of the monitoring stack are located in: `microservices-demo/monitoring`
+
+### 3.1. Deploying Node-Exporter and Prometheus
+
+- Deployment is automated using a Makefile: From the `microservices-demo/monitoring` directory, run:
+  ```bash
+  make apply
+  ```
+- Running `make apply` performs the following operations:
+
+  - Create the monitoring namespace: The namespace is created only if it does not already exist, allowing repeated executions without errors.
+
+  - Deploy Node Exporter: Node Exporter is deployed as a DaemonSet, ensuring one exporter instance runs on each worker node.
+
+  - Deploy Prometheus: Prometheus is deployed with Kubernetes-based service discovery and configured to scrape node-level metrics from Node Exporter.
+
+- After deployment, check that the pods are up and running:
+  ```bash
+  kubectl get pods -n monitoring
+  ```
+
+### 3.2. Accessing Prometheus (Google Cloud Shell)
+
+- Prometheus is exposed internally via a ClusterIP service and must be accessed using port forwarding.
+
+- Run the following command:
+  ```bash
+  kubectl port-forward -n monitoring svc/prometheus 9090:9090
+  ```
+
+- Then, in Google Cloud Shell:
+  - Click `Web Preview`
+  - Select Preview on `port 9090`
+
+### 3.3. Accessing Grafana (Local Machine)
+
+- Grafana cannot be reliably accessed through Google Cloud Shell’s Web Preview feature.
+  
+- Cloud Shell exposes services through a sandboxed proxy domain, which is rejected by Grafana’s strict browser origin security policies. As a result, certain Grafana features (such as dashboard imports from grafana.com) do not work correctly in this environment.
+
+- For this reason, Grafana must be accessed from a local machine by port-forwarding the service and opening it via `http://localhost:3000`, which is a trusted origin.
+
+- Start by deploying `Grafana` on the cluster on `Google Cloud shell` inside the `monitoring` directory:
+  ```bash
+  kubectl apply -n monitoring -f grafana.yaml
+  ```
+
+- First, we need to allow kubectl to authenticate with GKE from a local machine and so the GKE authentication plugin must be installed. Run the following commands on your machine:
+  ```bash
+  sudo apt-get update
+  sudo apt-get install google-cloud-sdk-gke-gcloud-auth-plugin
+  ```
+- Second, tell kubectl to use the plugin:
+  ```bash
+  echo 'export USE_GKE_GCLOUD_AUTH_PLUGIN=True' >> ~/.bashrc
+  source ~/.bashrc
+  ```
+- Third, reconnect to the cluster:
+  ```bash
+  gcloud container clusters get-credentials prodigy-cluster \
+  --zone europe-west6-a \
+  --project cloud-computing-478110
+  ```
+- Fourth: Once local access is configured, expose Grafana using port forwarding:
+  ```bash
+  kubectl port-forward -n monitoring svc/grafana 3000:3000
+  ```
+
+- You can now access the Grafana UI, with both username and password being `admin`:
+  ```bash
+  http://localhost:3000
+  ```
+  The `dashboard JSON file` is located in the monitoring directory and can be imported directly into Grafana.
+
+  ---
+
+## 4. Node-Level Metrics Collected
+
+- To evaluate the baseline behavior of the infrastructure hosting the application, we collect a set of node-level metrics covering CPU, memory, disk, and network resources. These metrics provide visibility into the overall health and capacity of each Kubernetes worker node before any application load is injected.
+
+- The metrics are collected by Prometheus via the Node Exporter and visualized using Grafana dashboards.
+
+- The following node-level metrics are collected:
+  - Node availability (`up`)
+  - CPU utilization and idle headroom
+  - Memory usage ratio and available memory
+  - Disk throughput and I/O saturation
+  - Network throughput and packet drops
+
+- Each metric is queried using PromQL and visualized through Grafana dashboards.
