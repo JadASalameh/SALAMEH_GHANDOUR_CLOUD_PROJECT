@@ -163,17 +163,112 @@ All deployment artifacts of the monitoring stack are located in: `microservices-
 
   ---
 
-## 4. Node-Level Metrics Collected
 
-- To evaluate the baseline behavior of the infrastructure hosting the application, we collect a set of node-level metrics covering CPU, memory, disk, and network resources. These metrics provide visibility into the overall health and capacity of each Kubernetes worker node before any application load is injected.
 
-- The metrics are collected by Prometheus via the Node Exporter and visualized using Grafana dashboards.
+## 4. Baseline Evaluation — Node-Level Metrics
 
-- The following node-level metrics are collected:
-  - Node availability (`up`)
-  - CPU utilization and idle headroom
-  - Memory usage ratio and available memory
-  - Disk throughput and I/O saturation
-  - Network throughput and packet drops
+This section presents the baseline evaluation of node-level infrastructure metrics collected using Prometheus and visualized with Grafana. The objective is to validate that the monitoring stack is correctly deployed and that the cluster operates within expected resource usage limits under no artificial load.
 
-- Each metric is queried using PromQL and visualized through Grafana dashboards.
+
+
+### 4.1 Node Availability (UP/DOWN)
+
+![Node Availability Panel](images/node_availability.png)
+
+- This panel displays the `up{job="node-exporter"}` metric for each node. All three nodes report a value of `1` (UP), indicating that Prometheus can successfully scrape the Node Exporter on every VM.
+
+- **Interpretation**
+  - All nodes in the GKE cluster are reachable and exporting metrics correctly.  
+  - No scrape failures, restarts, or availability issues are observed.
+
+---
+
+### 4.2 Memory Usage (%) per Node
+
+![Memory Usage per Node](images/memory_usage.png)
+ 
+- This line chart displays the percentage of memory used on each node over time.
+
+- **Interpretation**  
+  - Memory usage remains stable across all nodes (approximately 26–28%).  
+  - Small fluctuations correspond to normal system activity such as container scheduling and OS background processes.  
+  - No signs of memory leaks or abnormal growth are observed.
+
+---
+
+### 4.3. CPU Usage (%) per Node
+
+![CPU Usage per Node](images/cpu_usage.png)
+
+- CPU usage per node, aggregated using:
+
+```promql
+sum by (instance) (
+  rate(node_cpu_seconds_total{mode!="idle"}[5m])
+)
+```
+
+- **Interpretation**
+  - CPU utilization remains low (around 7–9%), indicating limited load at baseline.  
+  - One node consistently exhibits slightly higher CPU usage, which may indicate uneven workload distribution by the Kubernetes scheduler.  
+  - No CPU saturation or bottlenecks are detected.
+
+---
+
+### 4.4. Disk Throughput (Read + Write)
+
+![disk_throuphput](images/disk_throughput.png)
+ 
+- Disk read and write throughput per node, expressed in kB/s.
+
+- **Interpretation**  
+  - Throughput remains in the 480–500 kB/s range across nodes.  
+  - Short-lived spikes correspond to normal pod activity such as temporary file access.  
+  - No sustained high disk activity or I/O-intensive workloads are observed.
+
+---
+
+### 4.5. Disk I/O Saturation (%)
+
+![Disk_I/O_Saturation](images/disk_IO.png)
+
+- Percentage of time the disk spends servicing I/O requests.
+
+- **Interpretation**  
+  - Disk I/O saturation remains very low (approximately 2.5–3.5%).  
+  - No disk queue buildup or contention is present.  
+  - The storage subsystem is operating well below its performance limits.
+
+---
+
+### 4.6. Network Packet Drops (eth0)
+
+![Network_Packet_Drops](images/packet_drops.png)
+
+- Number of dropped packets per second on the primary network interface of each node.
+
+- **Interpretation**  
+  - Packet drops remain at 0 p/s for all nodes throughout the observation period.  
+  - This indicates stable networking with no congestion, packet loss, or retransmissions.
+
+---
+
+### 4.7. Network Throughput (eth0)
+
+![Network_Throughput](images/network_throughput.png)
+
+- Total inbound and outbound network traffic per node.
+
+- **Interpretation**  
+  - Network throughput ranges from approximately 32 kB/s to 52 kB/s depending on the node.  
+  - One node consistently handles more traffic, possibly due to hosting more services or control-plane-related communication.  
+  - No abnormal spikes or instability are observed.
+
+---
+
+## 4.8 Baseline Summary
+
+The baseline measurements confirm that the monitoring infrastructure is correctly deployed and functioning as expected.  
+All nodes operate well within safe resource limits, with no signs of contention, saturation, or instability.  
+This validated baseline serves as a reference point for subsequent performance evaluations under load, including pod-level metrics and application stress testing using Locust.
+
