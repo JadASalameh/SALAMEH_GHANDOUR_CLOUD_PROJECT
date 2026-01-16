@@ -477,6 +477,321 @@ kubectl top pods
 kubectl top nodes
 ```
 
+# Monitoring and Performance Evaluation (Prometheus + Grafana)
+
+## Objectives
+
+This section documents the monitoring stack and the methodology used to evaluate the performance of the Online Boutique application on GKE. The monitoring stack is deployed inside the Kubernetes cluster and is used to observe resource consumption:
+
+* Node-level resource usage (CPU, memory)
+* Pod-level resource usage (CPU, memory)
+
+The performance evaluation is conducted using the Online Boutique Locust-based load generator, deployed outside the Kubernetes cluster on a dedicated VM inside the same cloud region.
+
+---
+
+## Environment split and constraints
+
+We intentionally split responsibilities across two environments to avoid the issues encountered with Cloud Shell web preview and to ensure stable access to Grafana:
+
+* **Cloud Shell (GCP):** used to deploy and modify Kubernetes resources (application + monitoring stack) and to run Terraform/Ansible automation for the load generator VM.
+* **Local machine:** used to access Grafana via `kubectl port-forward` and to take report screenshots (stable UI access, no Cloud Shell proxy/CORS issues).
+
+This separation is required for reproducibility and to avoid browser/proxy-related login failures.
+
+---
+
+## 1 - Deploy the monitoring stack in-cluster (Cloud Shell)
+
+### 1.1 Create a dedicated namespace
+
+```bash
+kubectl create namespace monitoring
+```
+
+### 1.2 Add Helm repository and install kube-prometheus-stack
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm install monitoring prometheus-community/kube-prometheus-stack \
+  -n monitoring
+```
+
+This Helm chart deploys a complete monitoring stack including:
+
+* Prometheus (metrics collection and storage)
+* Grafana (dashboards and visualization)
+* node-exporter (node-level metrics)
+* kube-state-metrics (Kubernetes object state)
+* components enabling container/pod metrics scraping (via kubelet/cAdvisor)
+
+### 1.3 Verify monitoring components are running
+
+```bash
+kubectl get pods -n monitoring
+```
+
+All pods should eventually reach `Running` state.
+
+---
+
+## 2 - Deploy the application (Cloud Shell)
+
+To generate meaningful monitoring data, Online Boutique must be running.
+
+```bash
+kubectl apply -k kustomize/overlays/lab
+```
+
+Verify application pods:
+
+```bash
+kubectl get pods
+```
+
+Verify external entrypoint:
+
+```bash
+kubectl get svc frontend-external
+```
+
+Wait until `EXTERNAL-IP` is assigned.
+
+---
+
+## 3 - Access Grafana from the local machine (Local)
+
+### 3.1 Configure local kubectl access to the GKE cluster
+
+```bash
+gcloud auth login
+gcloud config set project <PROJECT_ID>
+
+gcloud container clusters get-credentials <CLUSTER_NAME> \
+  --zone <ZONE>
+```
+
+Sanity check:
+
+```bash
+kubectl get nodes
+```
+
+### 3.2 Retrieve Grafana admin password
+
+```bash
+kubectl get secret -n monitoring monitoring-grafana \
+  -o jsonpath="{.data.admin-password}" | base64 --decode
+echo
+```
+
+### 3.3 Port-forward Grafana to localhost
+
+```bash
+kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
+```
+
+Open in browser:
+
+* URL: `http://localhost:3000`
+* Username: `admin`
+* Password: value retrieved from the secret above
+
+---
+
+## 4 - Baseline monitoring (no load)
+
+### 4.1 Ensure load generator is stopped (Cloud Shell)
+
+```bash
+make loadgen-stop
+```
+
+### Baseline Resource Utilization (No Load)
+
+Before running any performance experiments, we captured baseline metrics while the application was deployed but **no external load was generated**. These measurements serve as a reference point to compare against later load scenarios.
+
+#### Node-Level CPU Utilization (Baseline)
+
+The following figure shows CPU usage at the node level when the system is idle.
+
+- CPU usage remains very low across all nodes
+- No spikes or contention are observed
+- Usage is well below allocatable capacity
+
+![Baseline Node CPU Usage](Figures/baselineCPU_nodes.png)
+
+---
+
+#### Node-Level Memory Utilization (Baseline)
+
+Memory usage at the node level is stable and significantly below allocatable memory.
+
+- No memory pressure
+- No abnormal growth over time
+- Cache usage remains stable
+
+![Baseline Node Memory Usage](Figures/BaselineMemory_node.png)
+
+---
+
+#### Pod-Level CPU Utilization (Baseline)
+
+The following figure shows CPU usage for a representative application pod (`checkoutservice`) under no load.
+
+- Actual CPU usage is near zero
+- CPU requests and limits are visible
+- No CPU throttling is observed
+
+![Baseline Pod CPU Usage](Figures/baselineCPU_pod.png)
+
+---
+
+#### Pod-Level Memory Utilization (Baseline)
+
+Memory usage for the same pod remains low and stable.
+
+- Working set size is well below memory requests
+- Memory limits are far from being reached
+- No risk of eviction or OOM events
+
+![Baseline Pod Memory Usage](Figures/BaselineMemory_pod.png)
+
+---
+
+### Baseline Summary
+
+The baseline measurements confirm that:
+- The cluster is healthy at rest
+- There is no resource contention
+- CPU and memory limits are not being approached
+- The monitoring infrastructure is correctly collecting metrics
+
+These baseline results will be used as a reference for analyzing the impact of increasing load in the following sections.
+
+---
+
+## 5 - Experiment methodology (load phases)
+
+We run the load generator outside the cluster to avoid resource contention and observer effects inside Kubernetes. The load generator targets the `frontend-external` service (LoadBalancer) and generates user-like traffic.
+
+We conduct experiments in phases. For each phase we:
+
+1. Start or adjust load
+2. Wait for stabilization (typically 1–3 minutes depending on the phase)
+3. Capture Grafana screenshots for node-level and pod-level resource usage
+
+
+### 5.1 Load phases
+
+* **Phase A: Normal load**
+
+  * Low concurrency, stable system behavior
+* **Phase B: High load / throttling**
+
+  * Increased users and spawn rate, rising CPU demand
+  * CPU approaches node allocatable capacity; latency and failures may appear
+
+---
+
+## 6 - Experiment execution (commands + evidence)
+
+### 6.1 Start load generation (Cloud Shell)
+
+```bash
+make loadgen-start
+```
+
+If the load generator requires explicit parameters, they are passed through Ansible (documented in the automation section). During each phase, we keep Grafana open on the local machine to observe real-time behavior.
+
+### 6.2 Capture node-level evidence (Local)
+
+* **Kubernetes / Compute Resources / Node**
+
+Dashboard:
+#### Node-Level CPU Utilization (Normal)
+
+![Normal node cpu Usage](Figures/NormalLoadCPU_node.png)
+
+#### Node-Level Memory Utilization (Normal)
+
+![Normal node memory Usage](Figures/NormalMemory_node.png)
+
+
+#### Node-Level CPU Utilization (High)
+
+![High node cpu Usage](Figures/HighLoadCPU_node.png)
+
+#### Node-Level Memory Utilization (High)
+
+![High node memory Usage](Figures/HighLoadMemory_node.png)
+
+ 
+
+
+We specifically observed:
+
+* The difference between **node CPU capacity** and **node allocatable CPU**
+* CPU saturation occurring at allocatable limits under higher load
+* Per-pod CPU contributions on the selected node
+
+### 6.3 Capture pod-level evidence (Local)
+
+* **Kubernetes / Compute Resources / Pod**
+
+Dashboard:
+#### Pod-Level CPU Utilization for front-end service (Normal)
+![Normal pod cpu Usage](Figures/NormalLoadCPU_pod.png)
+
+#### Pod-Level Memory Utilization (Normal)
+![Normal pod memory Usage](Figures/NormalLoadMemory_pod.png)
+
+#### Pod-Level CPU Utilization for front-end service (High) reaching CPU Throttling
+![High pod cpu Usage](Figures/HighLoadCPU_pod.png)
+
+The following graph shows the **CPU usage** and **CPU throttling** of the `frontend` service under high load (1000 users, spawn rate = 20 users/s):
+
+- The service's CPU usage increases under load and reaches the **CPU limit** (200m), triggering **CPU throttling**.
+- At its peak, **99.4% of CPU capacity is throttled**, indicating that the service cannot fully utilize the available resources.
+- This throttling leads to **request failures**, as the frontend becomes a bottleneck, preventing all requests from being processed correctly.
+
+This indicates that when the **frontend** service experiences high CPU pressure, the entire application becomes **unresponsive**, and no requests can be fulfilled. This answers the **bonus** part of the project where we discovered that the frontend service is the bottleneck in this set up.
+
+#### Pod-Level Memory Utilization (High)
+![High pod memory Usage](Figures/HighLoadMemory_pod.png)
+
+
+We identified which microservice consumed the most CPU under load and how the distribution changed as load increased.
+
+### 6.4 Stop load generation (Cloud Shell)
+
+```bash
+make loadgen-stop
+```
+
+We observed recovery behavior in Grafana (CPU dropping back toward baseline).
+
+---
+
+## 7 - Key observations and interpretation
+
+### Node-level interpretation template
+
+* Under baseline conditions, node CPU and memory remain low and stable.
+* Under normal load, CPU increases proportionally with traffic.
+* Under high load, aggregate CPU usage approaches the node’s allocatable CPU, leading to saturation.
+* CPU saturation at allocatable limits indicates a CPU-bound bottleneck at the infrastructure level.
+
+### Pod-level interpretation template
+
+* Resource usage differs across microservices, reflecting request paths and service responsibilities.
+* Frontend and request-path services show higher CPU usage under load.
+* Under saturation, some services may exhibit throttling or health-check instability.
+
+---
+
 
 
 
