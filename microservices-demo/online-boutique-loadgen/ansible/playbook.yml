@@ -1,0 +1,47 @@
+- name: Configure VM and run Online Boutique load generator
+  hosts: loadgen
+  become: true
+
+  vars:
+    loadgen_image: "jads7427/loadgenerator:v1.0"
+    container_name: "loadgenerator"
+    users: "20000"
+    rate: "500"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+
+    - name: Enable and start Docker service
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Pull load generator image
+      community.docker.docker_image:
+        name: "{{ loadgen_image }}"
+        source: pull
+
+    - name: Remove previous load generator container if any
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        state: absent
+
+    - name: Run load generator container (headless locust)
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        image: "{{ loadgen_image }}"
+        state: started
+        restart_policy: always
+        env:
+          FRONTEND_ADDR: "{{ frontend_ip }}"
+          USERS: "{{ users }}"
+          RATE: "{{ rate }}"

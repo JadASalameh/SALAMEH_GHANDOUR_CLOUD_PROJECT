@@ -1,0 +1,12 @@
+- name: Stop and remove load generator container
+  hosts: loadgen
+  become: true
+
+  vars:
+    container_name: "loadgenerator"
+
+  tasks:
+    - name: Stop and remove load generator container if present
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        state: absent
