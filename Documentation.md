@@ -268,7 +268,7 @@ This result confirms that the removal of the load generator and the adjustment o
 
 ## 6. Running and Deploying the Load Generator Using Infrastructure as Code
 
-### 6.1 Motivation and Infrastructure-as-Code Approach
+### 6.1 Motivation for Infrastructure-as-Code 
 
 - In this project, we deploy the load generator **outside the Kubernetes cluster** to avoid consuming cluster resources and to produce realistic external traffic. While we could create and configure a VM on Google Cloud manually, this approach is:
 
@@ -280,95 +280,210 @@ This result confirms that the removal of the load generator and the adjustment o
 
    -   unsuitable for automation or systematic evaluation
 
-- To address these issues, we adopt an Infrastructure-as-Code (IaC) approach that combines Terraform and Ansible, each with a clearly defined role.
+- We use:
 
-- **Terraform** is used for **infrastructure provisioning**, i.e., reserving and managing the cloud resources required to host the load generator. In this project, Terraform is responsible for:
+  - Terraform to provision the VM and firewall rule on GCP,
 
-   -   Creating a Google Compute Engine virtual machine of type **`e2-medium`**
+  - Ansible to configure the VM (Docker install) and run the load generator container,
 
-   -   Attaching a boot disk based on **Debian 12**
+  - Makefile to orchestrate the workflow with one command.
 
-   -   Assigning a public IPv4 address to the virtual machine
-
-   -   Applying a network tag to the instance
-
-   -   Creating a firewall rule that allows inbound traffic on ports **22 (SSH)** and **8089 (Locust)** exclusively for this instance
-
-   - Terraform also exposes the external IP address of the virtual machine through a declared output, which is later consumed by the automation workflow.
- 
- - **Ansible** is used for **infrastructure configuration and workload execution** on the provisioned virtual machine. In this project, Ansible is responsible for:
-
-   -   Connecting to the virtual machine via SSH using the credentials injected by Google Cloud
-
-   -   Installing and enabling **Docker** on the virtual machine
-
-   -   Pulling the pre-built load generator container image
-
-   -   Running the load generator container with the appropriate runtime parameters
-
-   -   Configuring the load generator to target the **external frontend service** of the Kubernetes application
-
-This clear separation ensures that Terraform focuses exclusively on cloud resource lifecycle management, while Ansible handles all software installation and runtime configuration tasks.
-
----
-
-### 6.2 Setting Up Terraform for Infrastructure Provisioning
-
-- All Terraform files are grouped in the terraform/ directory to clearly separate infrastructure provisioning from configuration and orchestration logic.
-  
-- Default location of the VM: region `europe-west6` and zone `europe-west6-a`
-  
-- All Terraform operations must be run from the dedicated terraform/ directory.
-  ```bash
-   cd microservices-demo/online-boutique-loadgen/terraform
-  ```
-
-▶  Directory Structure: 
+### 6.2 Directory structure
 <pre>
-terraform/
-├── main.tf - Defines the Google Cloud provider and the resources to create
-├── variables.tf - Declares input variables such as project_id, region, and zone.
-├── terraform.tfvars - Provides actual values for the variables
-├── terraform.tfstate - Store Terraform’s view of the deployed resources 
-├── terraform.tfstate.backup
-
+  online-boutique-loadgen/ 
+  ├── Makefile 
+  ├── terraform/ 
+  │ ├── main.tf 
+  │ ├── variables.tf 
+  │ ├── terraform.tfvars 
+  │ └── outputs.tf 
+  └── ansible/ 
+  │ ├── ansible.cfg 
+  │ ├── inventory.ini 
+  │ ├── playbook.yml 
+  │ └── stop-loadgen.yml
 </pre>
 
-▶ Setting `project_id`: 
+- `ansible/inventory.ini` is generated dynamically from Terraform output, so it should not be committed.
+
+- `~/.ssh/ansible_vm` and `~/.ssh/ansible_vm.pub` are the SSH keys used by Ansible to connect to the VM.
+
+### 6.3 Terraform: what it provisions
+
+Terraform is responsible for provisioning the cloud infrastructure:
+
+#### 6.3.1 Resources created:
+
+  - Compute Engine VM (Debian 12, type e2-medium)
+
+  - Firewall rule allowing inbound:
+
+    - `TCP/22` (SSH) for Ansible connectivity
+
+    - `TCP/8089` (optional if you run Locust UI; headless mode does not require it)
+
+
+#### 6.3.2 SSH key injection (critical)
+
+  - Terraform injects the Ansible public key into the VM metadata so that the VM accepts SSH login without OS Login / gcloud SSH.
+
+  - Conceptually:
+
+    - we created a local key pair once: private key: ~/.ssh/ansible_vm and public key: ~/.ssh/ansible_vm.pub
+
+    - Terraform injects the public key into the VM using instance metadata.
+
+    - The VM boots and installs this key into authorized_keys for the configured user (commonly ansible).
+
+    - Ansible then SSHes using ~/.ssh/ansible_vm.
+
+#### 6.3.3 Terraform output used later
+
+- Terraform outputs: `loadgen_external_ip` = the VM’s external IP address
+
+- This output is used by the Makefile to generate the Ansible inventory automatically.
+
+
+
+### 6.4 Ansible: what it configures and runs
+
+Ansible is responsible for configuring the VM and running the containerized load generator.
+
+#### 6.4.1 ansible/playbook.yml responsibilities
+
+- The playbook performs these tasks on the VM:
+
+  - Update apt cache
+
+  - Install Docker
+  
+  - Enable and start Docker service
+  
+  - Pull the load generator image (e.g., jads7427/loadgenerator:lab)
+  
+  - Remove any previous container named loadgenerator
+  
+  - Run a new container in headless mode with: FRONTEND_ADDR set to the external IP of the Online Boutique frontend load balancer and optional USERS and RATE environment variables
+  
+- So as long as FRONTEND_ADDR is correct, the container will start generating traffic.
+
+#### 6.4.2 ansible/stop-loadgen.yml
+
+- This playbook removes the load generator container from the VM:
+
+  - Stops it if running
+
+  - Removes it if present
+
+
+
+### 6.5. Makefile: orchestration and behavior
+
+- The Makefile acts as the single entrypoint for running the whole pipeline.
+
+#### 6.5.1 Targets overview
+
+- `make all`
+Full pipeline: provision VM + install Ansible deps + generate inventory + validate SSH + run load generator
+
+- `make infra`
+Only Terraform provisioning
+
+- `make inventory`
+Regenerates ansible/inventory.ini from Terraform output
+
+- `make ansible-check`
+Verifies Ansible can SSH into the VM
+
+- `make loadgen`
+Resolves frontend external IP and runs the Ansible playbook to start Locust in Docker
+
+- `make stop-loadgen`
+Stops and removes the load generator container
+
+- `make destroy`
+Destroys the VM + firewall via Terraform
+
+- `make clean`
+Removes generated inventory file
+
+
+
+### 6.6. How to run 
+
+#### 6.6.1 Prerequisites
+
+- You have a running GKE cluster with `Online Boutique deployed`.
+
+- You have a LoadBalancer service exposing the frontend: `frontend-external` must have an `EXTERNAL-IP`.
+
+- You have Terraform installed.
+
+- You have kubectl configured to talk to the cluster.
+
+- Generate the SSH key once (only if not already present):
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/ansible_vm -N ""
+```
+
+  
+#### 6.6.2 One-command run
+
+- From online-boutique-loadgen/: 
+```bash
+make all
+```
+
+#### 6.6.3 Stop load generator
+```bash
+make stop-loadgen
+```
+
+#### 6.6.4 Destroy infrastructure
+```bash
+make destroy
+```
+
+
+### 6.7. How to test that the load generator works
+
+#### 6.7.1 Confirm container is running on the VM
+
+- SSH to the VM:
+```bash
+ssh -i ~/.ssh/ansible_vm ansible@$(cd terraform && terraform output -raw loadgen_external_ip)
+```
+
+- Check container exists:
 
 ```bash
-nano terraform.tfvars
+docker ps | grep loadgenerator
 ```
-Replace with your project ID: 
-<pre>
-   project_id = "cloud-computing-478110"
-</pre>
 
+### 6.7.2 Confirm Locust is actually generating traffic (logs)
 
-▶ Initialize Terraform: Downloads providers and prepares the working directory.
+- On the VM:
 ```bash
-terraform init
+docker logs --tail=50 loadgenerator
 ```
-▶ Provision Infrastructure: Creates or updates resources to match the configuration. Idempotent.
 
+You should see the periodic Locust stats 
+
+#### 6.7.3 Confirm GKE sees the traffic
+
+- From Cloud Shell check that pods’ CPU usage increases under load: You should observe higher CPU utilization (especially frontend and some backend services) after load starts.
 ```bash
-terraform apply
-```
-OR
-```bash
-terraform apply -auto-approve
-```
-▶ Retrieve VM's External IP: This IP will be passed to Ansible in later steps:
-
-```bash
-terraform output loadgen_external_ip
-```
-▶ Destroy Infrastructure: Deletes all resources tracked by Terraform.
-
-```bash
-terraform destroy
+kubectl top pods
+kubectl top nodes
 ```
 
-### 6.3 Configuring and Running the Load Generator with Ansible
 
-- Once the load generator virtual machine has been provisioned using Terraform, Ansible is used to configure the system and execute the load generator workload. Ansible operates by connecting to the virtual machine over SSH and applying a sequence of idempotent tasks that bring the system into the desired configuration.
+
+
+
+
+
+
+
+
+
